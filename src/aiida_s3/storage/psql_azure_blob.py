@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import typing as t
 
+from aiida.common.pydantic import MetadataField
 from aiida.storage.psql_dos.backend import PsqlDosBackend
-from pydantic import Field
 
 from ..repository.azure_blob import AzureBlobStorageRepositoryBackend
 from .psql_s3 import PsqlS3StorageMigrator
@@ -37,15 +37,16 @@ class PsqlAzureBlobStorage(PsqlDosBackend):
     """Storage backend using PostgresSQL and Azure Blob Storage."""
 
     migrator = PsqlAzureBlobStorageMigrator
+    _repository: AzureBlobStorageRepositoryBackend | None = None
 
-    class Model(PsqlDosBackend.Model):
+    class CliModel(PsqlDosBackend.CliModel):
         """Model describing required information to configure an instance of the storage."""
 
-        container_name: str = Field(
+        container_name: str = MetadataField(
             title='Container name',
             description='The Azure Blob Storage container name.',
         )
-        connection_string: str = Field(
+        connection_string: str = MetadataField(
             title='Connection string',
             description='The Azure Blob Storage connection string.',
         )
@@ -56,4 +57,6 @@ class PsqlAzureBlobStorage(PsqlDosBackend):
 
         :returns: The repository of the configured profile.
         """
-        return self.migrator(self.profile).get_repository()
+        if self._repository is None:
+            self._repository = self.migrator(self.profile).get_repository()
+        return self._repository

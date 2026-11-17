@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import tempfile
 import typing as t
@@ -13,11 +14,23 @@ from aiida.repository.backend.abstract import AbstractRepositoryBackend
 
 __all__ = ('S3RepositoryBackend',)
 
+MAX_DELETE_OBJECTS = 1000
+
+#: Maximum number of concurrent HEAD requests used to resolve ``has_objects``.
+MAX_HAS_OBJECTS_WORKERS = 8
+
 
 class S3RepositoryBackend(AbstractRepositoryBackend):
     """Implementation of the ``AbstractRepositoryBackend`` using S3 as the backend."""
 
-    def __init__(self, endpoint_url: str, access_key_id: str, secret_access_key: str, bucket_name: str):
+    def __init__(
+        self,
+        endpoint_url: str,
+        access_key_id: str,
+        secret_access_key: str,
+        bucket_name: str,
+        region_name: str | None = None,
+    ):
         """Construct a new instance for a given bucket.
 
         .. note:: It is possible to construct an instance for a bucket that doesn't exist yet. To use the backend,
@@ -28,13 +41,18 @@ class S3RepositoryBackend(AbstractRepositoryBackend):
         :param access_key_id: The access key ID to use to authenticate with S3.
         :param secret_access_key: The secret access key to use to authenticate with S3.
         :param bucket_name: The name of the bucket to use.
+        :param region_name: The region name to use for the bucket. Required for bucket creation with region-specific
+            endpoints (e.g., moto, MinIO, SeaweedFS). If ``None``, no ``LocationConstraint`` is set when creating
+            the bucket, which works for AWS S3 ``us-east-1`` but fails for other regions and S3-compatible services.
         """
         self._bucket_name = bucket_name
+        self._region_name = region_name
         self._client = boto3.client(
             's3',
             endpoint_url=endpoint_url,
             aws_access_key_id=access_key_id,
             aws_secret_access_key=secret_access_key,
+            region_name=region_name,
         )
 
     def __str__(self) -> str:
@@ -68,6 +86,9 @@ class S3RepositoryBackend(AbstractRepositoryBackend):
         if self.is_initialised:
             return
 
+        if self._region_name is not None and 'CreateBucketConfiguration' not in kwargs:
+            kwargs['CreateBucketConfiguration'] = {'LocationConstraint': self._region_name}
+
         self._client.create_bucket(Bucket=self._bucket_name, **kwargs)
 
     @property
@@ -80,34 +101,73 @@ class S3RepositoryBackend(AbstractRepositoryBackend):
         """Return the format for the keys of the repository."""
         return 'uuid4'
 
+    @property
+    def archive_format(self) -> str | None:
+        """Return the format of the archive."""
+        return super().archive_format
+
     def erase(self) -> None:
         """Delete the bucket configured for this instance and all its contents."""
         if not self._bucket_exists:
             return
 
-        self.delete_objects(list(self.list_objects()))
+        objects = []
+        for key in self.list_objects():
+            objects.append(key)
+            if len(objects) == MAX_DELETE_OBJECTS:
+                self.delete_objects(objects)
+                objects = []
+
+        self.delete_objects(objects)
         self._client.delete_bucket(Bucket=self._bucket_name)
 
-    def _put_object_from_filelike(self, handle: t.BinaryIO) -> str:
+    def _put_object_from_filelike(self, handle: t.BinaryIO, key=None) -> str:
         """Store the byte contents of a file in the repository.
 
         :param handle: filelike object with the byte content to be stored.
+        :param key: fully qualified identifier for the object within the repository.
+                    If not provided, a new key will be generated.
         :return: the generated fully qualified identifier for the object within the repository.
         :raises TypeError: if the handle is not a byte stream.
         """
-        key = str(uuid.uuid4())
+        if key is None:
+            key = str(uuid.uuid4())
+
         self._client.put_object(Bucket=self._bucket_name, Body=handle, Key=key)
         return key
 
     def has_objects(self, keys: list[str]) -> list[bool]:
         """Return whether the repository has an object with the given key.
 
+        Each key is resolved with a single HEAD request, so the cost is
+        O(len(keys)) regardless of the bucket size. The previous
+        implementation listed the entire bucket for every call: callers that
+        verify large key sets (e.g. ``import_shared_collection`` checking a
+        manifest against a shared bucket) paged through the whole bucket on
+        every import, and per-key callers paid a full listing per key.
+
         :param keys: list of fully qualified identifiers for objects within the repository.
         :return: list of booleans, in the same order as the keys provided, with value True if the respective object
             exists and False otherwise.
         """
-        existing_keys = set(self.list_objects())
-        return [key in existing_keys for key in keys]
+        if not keys:
+            return []
+
+        def has_object(key: str) -> bool:
+            try:
+                self._client.head_object(Bucket=self._bucket_name, Key=key)
+            except botocore.exceptions.ClientError:
+                return False
+            return True
+
+        if len(keys) == 1:
+            return [has_object(keys[0])]
+
+        workers = min(len(keys), MAX_HAS_OBJECTS_WORKERS)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            # boto3 clients are thread-safe for API calls; executor.map
+            # preserves the input order
+            return list(executor.map(has_object, keys))
 
     @contextlib.contextmanager
     def open(self, key: str) -> t.Iterator[t.IO[bytes]]:  # type: ignore[override]
@@ -122,14 +182,14 @@ class S3RepositoryBackend(AbstractRepositoryBackend):
         :raise OSError: if the file could not be opened.
         """
         try:
-            with tempfile.TemporaryFile() as handle:
+            with tempfile.NamedTemporaryFile() as handle:
                 self._client.download_fileobj(self._bucket_name, key, handle)
                 handle.seek(0)
                 yield handle
         except botocore.exceptions.ClientError as exception:
             raise FileNotFoundError(f'object with key `{key}` does not exist.') from exception
 
-    def iter_object_streams(self, keys: list[str]) -> t.Iterator[tuple[str, t.IO[bytes]]]:  # type: ignore[override]
+    def iter_object_streams(self, keys: list[str]) -> t.Iterator[tuple[str, t.IO[bytes]]]:  # tyZpe: ignore[override]
         """Return an iterator over the (read-only) byte streams of objects identified by key.
 
         .. note:: handles should only be read within the context of this iterator.
@@ -151,8 +211,13 @@ class S3RepositoryBackend(AbstractRepositoryBackend):
         :raise OSError: if any of the files could not be deleted.
         """
         super().delete_objects(keys)
+
+        # Generate content md5
+
+        delete_payload = {'Objects': [{'Key': key} for key in keys], 'Quiet': True}
+
         if keys:
-            self._client.delete_objects(Bucket=self._bucket_name, Delete={'Objects': [{'Key': key} for key in keys]})
+            self._client.delete_objects(Bucket=self._bucket_name, Delete=delete_payload)
 
     def list_objects(self) -> t.Iterable[str]:
         """Return iterable that yields all available objects by key.

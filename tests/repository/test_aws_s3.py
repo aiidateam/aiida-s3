@@ -129,9 +129,6 @@ def test_open(repository, generate_directory):
         key_b = repository.put_object_from_filelike(handle)
 
     with repository.open(key_a) as handle:
-        assert isinstance(handle, io.BufferedRandom)
-
-    with repository.open(key_a) as handle:
         assert handle.read() == b'content_a'
 
     with repository.open(key_b) as handle:

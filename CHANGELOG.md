@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## Unreleased
+
+### Features
+- Add `MultiS3RepositoryBackend`: a repository spanning one read-write primary and any number of read-only shared
+  S3 repositories, addressed by namespaced object keys (`shared/<name>/<object-key>`)
+- `s3.psql_s3`: support the optional `shared_repositories` entry in the profile storage configuration
+- Add the `aiida-s3` CLI with the `shared add/list/remove` commands to manage the shared repositories of the current
+  profile, and the `export-shared`/`import-shared` commands to share data between profiles by reference, without
+  transferring any object bytes
+- Add `aiida_s3.shared` with helpers to remap node repository metadata and to attach existing shared objects to
+  stored nodes
+
+### Bug fixes
+- `S3RepositoryBackend`: allow `endpoint_url` to be omitted in the storage configuration, in which case the default
+  AWS endpoint is used
+
 ## `v0.2.0` - 2023-02-27
 
 ### Improvements

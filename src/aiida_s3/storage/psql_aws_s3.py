@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import typing as t
 
+from aiida.common.pydantic import MetadataField
 from aiida.storage.psql_dos import PsqlDosBackend
-from pydantic import Field
 
 from ..repository.aws_s3 import AwsS3RepositoryBackend
 from .psql_s3 import PsqlS3StorageMigrator
@@ -34,22 +34,24 @@ class PsqlAwsS3Storage(PsqlDosBackend):
 
     migrator = PsqlAwsS3StorageMigrator
 
-    class Model(PsqlDosBackend.Model):
+    _repository: AwsS3RepositoryBackend | None = None
+
+    class CliModel(PsqlDosBackend.CliModel):
         """Model describing required information to configure an instance of the storage."""
 
-        aws_access_key_id: str = Field(
+        aws_access_key_id: str = MetadataField(
             title='AWS access key ID',
             description='The AWS access key ID.',
         )
-        aws_secret_access_key: str = Field(
+        aws_secret_access_key: str = MetadataField(
             title='AWS secret access key',
             description='The AWS secret access key.',
         )
-        aws_region_name: str = Field(
+        aws_region_name: str = MetadataField(
             title='AWS region',
             description='The AWS region name code, e.g., `eu-central-1`.',
         )
-        aws_bucket_name: str = Field(
+        aws_bucket_name: str = MetadataField(
             title='AWS bucket name',
             description='The name of the AWS S3 bucket to use.',
         )
@@ -60,4 +62,6 @@ class PsqlAwsS3Storage(PsqlDosBackend):
 
         :returns: The repository of the configured profile.
         """
-        return self.migrator(self.profile).get_repository()
+        if self._repository is None:
+            self._repository = self.migrator(self.profile).get_repository()
+        return self._repository

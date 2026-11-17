@@ -65,12 +65,13 @@ def s3_config(should_mock_s3) -> dict:
     otherwise mocked values will be enforced.
 
     :return: Dictionary with parameters needed to initialize an S3 client. Contains the keys ``endpoint_url``,
-    ``access_key_id`` and ``secret_access_key``.
+    ``access_key_id``, ``secret_access_key`` and ``region_name``.
     """
     return {
         'endpoint_url': os.getenv('AIIDA_S3_ENDPOINT_URL', 'localhost:9000') if not should_mock_s3 else None,
         'access_key_id': os.getenv('AIIDA_S3_ACCESS_KEY_ID') if not should_mock_s3 else 'mocked',
         'secret_access_key': os.getenv('AIIDA_S3_SECRET_ACCESS_KEY') if not should_mock_s3 else 'mocked',
+        'region_name': os.getenv('AIIDA_S3_REGION_NAME', 'us-east-1'),
     }
 
 
@@ -97,6 +98,7 @@ def s3(should_mock_s3, s3_bucket_name, s3_config) -> t.Generator[dict, None, Non
         'endpoint_url': s3_config['endpoint_url'],
         'access_key_id': s3_config['access_key_id'],
         'secret_access_key': s3_config['secret_access_key'],
+        'region_name': s3_config['region_name'],
         'bucket_name': s3_bucket_name,
     }
     context = moto.mock_s3 if should_mock_s3 else contextlib.nullcontext

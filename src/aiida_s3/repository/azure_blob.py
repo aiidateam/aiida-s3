@@ -79,6 +79,11 @@ class AzureBlobStorageRepositoryBackend(AbstractRepositoryBackend):
         """Return the format for the keys of the repository."""
         return 'uuid4'
 
+    @property
+    def archive_format(self) -> str | None:
+        """Return the format of the archive."""
+        return super().archive_format
+
     def erase(self) -> None:
         """Delete the container configured for this instance and all its contents."""
         if not self._container_exists:
@@ -86,14 +91,16 @@ class AzureBlobStorageRepositoryBackend(AbstractRepositoryBackend):
 
         self._container_client.delete_container()
 
-    def _put_object_from_filelike(self, handle: t.BinaryIO) -> str:
+    def _put_object_from_filelike(self, handle: t.BinaryIO, key : str | None = None) -> str:
         """Store the byte contents of a file in the repository.
 
         :param handle: filelike object with the byte content to be stored.
+        :param key: fully qualified identifier for the object within the repository. If not provided, a new key will be generated.
         :return: the generated fully qualified identifier for the object within the repository.
         :raises TypeError: if the handle is not a byte stream.
         """
-        key = str(uuid.uuid4())
+        if key is None:
+            key = str(uuid.uuid4())
         self._container_client.upload_blob(name=key, data=handle)
         return key
 
